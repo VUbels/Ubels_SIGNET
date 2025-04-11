@@ -1,0 +1,149 @@
+---
+title: "SIGNET"
+output: html_document
+date: "2023-04-26"
+---
+
+```{r setup, include=FALSE}
+#if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+#BiocManager::version()
+
+# Install RcisTarget & AUCell
+#BiocManager::install(c("AUCell", "RcisTarget"))
+
+#install_github("ggobi/ggally")
+#install.packages('intergraph')
+```
+```{r}
+# Load packages and annotation data
+library(reshape2)
+library(umap)
+library(scales)
+library(intergraph)
+library(sna)
+library(pheatmap)
+library(igraph)
+library(GGally) 
+library(ggplot2)
+windowsFonts(TNM = windowsFont("Times New Roman"))
+windowsFonts(HNR = windowsFont("Helvetica Neue CE 55 Roman")) # Use specific font on Windows platform
+library(RcisTarget)
+library(AUCell)
+library(zoo)
+library(network)
+# Load extra functions
+source("C:/Users/UVictor/Documents/SIGNET/SIGNET.R")
+source("C:/Users/UVictor/Documents/SIGNET/SIGNET_Plot.R")
+```
+```{r}
+# Load gene sets to analyze, i.e the 'genesets' obtained in last step
+# Select motif database to use (annotations)
+data <- importAnnotations("https://resources.aertslab.org/cistarget/motif2tf/motifs-v10nr_clust-nr.hgnc-m0.001-o0.0.tbl")
+
+motifAnnotations <- data
+```
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE, results= FALSE}
+# Import the motif databases for RcisTarget
+motifRankings <- importRankings("C:/Users/UVictor/Documents/SIGNET/hg38_10kbp_up_10kbp_down_full_tx_v10_clust.genes_vs_motifs.rankings.feather")
+gene <- colnames(motifRankings)
+# Load data
+input_folder <- "C:/Users/UVictor/Documents/SIGNET/Ubels_2024/Anagen/"
+output_folder <- "C:/Users/UVictor/Documents/SIGNET/Ubels_2024/Anagen/"
+
+ac_ntf <- read.table(paste0(input_folder, "co_fc.txt"))
+ac_tf <- read.table(paste0(input_folder, "co_tf_fc.txt"))
+gene_ntf <- read.csv(paste0(input_folder, "gene_ntf.csv"))
+gene_tf <- read.csv(paste0(input_folder, "gene_tf.csv"))
+
+# Merge data
+coexpressed <- Merge(ac_ntf,ac_tf,gene_ntf,gene_tf,gene)
+# gESD test and outliers screening
+O <- Screen(coexpressed)
+# Transform to gene list
+copaired <- Copaired(O)
+```
+
+```{r}
+genesets <- Genesets(copaired)
+genesets_list <- levels(as.factor(copaired$V1))
+
+Regulons <- Prune(O, genesets, motifRankings, motifAnnotations, species = 'Homo sapiens')
+
+copaired2 <- Copaired2(Regulons)
+genesets2 <- Genesets(copaired2)
+genesets_list2 <- levels(as.factor(copaired2$V1))
+# Save the predicted regulons
+write.csv(genesets2, paste0(output_folder, "genesets_reduced.csv"))
+```
+
+```{r}
+# Load scRNA-seq data
+data <- read.csv(paste0(input_folder, "counts.csv"), header = T, row.names = 1) # Users may use any method to load the data matrix whose entries are exactly data counts
+meta <- read.csv(paste0(input_folder, "meta.data.csv"), header = T, row.names = 1) # A vector whose length equals to the number of samples in data
+
+meta_vector <- meta$FineClust
+class(vector)
+
+# Obtain AUC score matrix
+set.seed(123)
+par(mfrow=c(1,1))
+data_auc <- AUCellMatrix(data, genesets2, genesets_list2)
+```
+
+```{r}
+# Dimension reduction
+dataumap <- umap::umap(as.data.frame(t(data)))
+dataplot <- data.frame(dataumap$layout[,1:2], CellType = meta)
+colnames(dataplot) <- c("UMAP_1", "UMAP_2","CellType")
+# Scatter plot
+plot.scatter(dataplot)
+
+plot.heatmap(data_auc, meta, color)
+```
+
+
+```{r}
+# Get network object: mode = "crosshighlight" - under this mode the ntf nodes with degrees over one will be highlight
+start = genesets_list2
+
+vector_length <- length(start)
+
+edgecol <- rainbow(vector_length)
+
+net = getNetElement(copaired2, color = edgecol, center = start, mode = "crosshighlight")
+
+net$cross_max
+
+# personlize node characteristics
+mnodecol = c("#12356232", "#868686", "#003c67", "#a73030") # length of mnodecol equals to net$cross_max, in this case is 3
+
+nodecol = c(edgecol, mnodecol) 
+
+print(length(start))  # Length of genesets_list2
+print(net$cross_max)  # Value of cross_max
+print(length(edgecol))  # Length of edge colors
+print(length(mnodecol))  # Should be equal to net$cross_max
+
+
+names(nodecol) = c(start, "NTF", paste0("MNTF", 2:net$cross_max))
+nodesize = c(rep(30, length(start)), 10, rep(20, net$cross_max - 1))
+names(nodesize) = c(start, "NTF", paste0("MNTF", 2:net$cross_max))
+
+# network visualization
+set.seed(102400)
+
+plot.net <- function(net,...){
+  p = ggnet2(net, mode = "fruchtermanreingold", 
+             shape = 19, alpha = 0.85, 
+             size = "nodegroup", size.palette = nodesize, 
+             color = "nodegroup", color.palette = nodecol, 
+             label = TRUE, label.size = 1.25, label.color = "white", label.alpha = 1, 
+             edge.alpha = 0.75, edge.color = "edgecolor", edge.size = 0.5,
+             arrow.size = 8, arrow.gap = 0.01) +
+    guides(color = "none", size = "none")  # This removes both color and size legends
+  
+  return(p)
+}
+plot.net(net$net)
+```
